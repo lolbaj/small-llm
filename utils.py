@@ -46,7 +46,7 @@ def estimate_ram_usage(config: SmallLLMConfig):
     available_gb = psutil.virtual_memory().available / (1024**3)
 
     print("-" * 50)
-    print(f"[*] RAM ESTIMATOR (Projected for {total_params / 1e6:.2f}M parameters)")
+    print(f"[*] RAM ESTIMATOR - Projected for {total_params / 1e6:.2f}M parameters")
     print(f" - Model Weights: {param_mem_gb:.2f} GB")
     print(f" - Optimizer State: {optim_mem_gb:.2f} GB")
     print(f" - Peak Activations: ~{act_mem_gb:.2f} GB")

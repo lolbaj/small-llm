@@ -41,11 +41,17 @@ def train_stage1(config: SmallLLMConfig):
 
     model = MoETransformer(config).to(device)
 
-    try:
-        model = torch.compile(model)
-        print("[+] torch.compile() enabled.")
-    except RuntimeError as e:
-        print(f"[-] torch.compile() not available: {e}")
+    # torch.compile() fallback for constrained environments
+    if os.environ.get("DISABLE_COMPILE", "0") == "1":
+        print("[*] torch.compile() disabled via environment variable.")
+    else:
+        try:
+            # We use 'aot_eager' or 'stock' backends which are safer on CPU
+            model = torch.compile(model)
+            print("[+] torch.compile() enabled.")
+        except (RuntimeError, ImportError, Exception) as e:
+            print(f"[-] torch.compile() failed or not supported: {e}")
+            print("[!] Continuing with standard execution mode.")
 
     optimizer = AdamW(
         model.parameters(),

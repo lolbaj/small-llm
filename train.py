@@ -100,16 +100,17 @@ def train_stage1(config: SmallLLMConfig):
                     elapsed = time.time() - start_time
                     tps = total_tokens / elapsed
                     cur_loss = loss_val.item() * config.pretrain_grad_accum
+                    util_val = util.item()
                     print(
                         f"Step {step}/{config.pretrain_steps} | Loss: {cur_loss:.4f} | "
-                        f"Aux: {aux_loss.item():.4f} | Util: {util:.1f}% | T/s: {tps:.2f}"
+                        f"Aux: {aux_loss.item():.4f} | Util: {util_val:.1f}% | T/s: {tps:.2f}"
                     )
                     log_writer.writerow(
                         [
                             step,
                             cur_loss,
                             aux_loss.item(),
-                            util,
+                            util_val,
                             scheduler.get_last_lr()[0],
                             tps,
                         ]

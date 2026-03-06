@@ -70,7 +70,7 @@ class SmallLLMInference:
                 sys.stdout.write(token_text)
 
                 if verbose:
-                    sys.stdout.write(f" [Util: {util:.1f}%]")
+                    sys.stdout.write(f" [Util: {util.item():.1f}%]")
 
                 sys.stdout.flush()
 

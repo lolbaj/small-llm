@@ -210,7 +210,7 @@ class MoELayer(nn.Module):
                 0, indices[:, idx], torch.ones_like(indices[:, idx], dtype=torch.float)
             )
 
-        utilization = (expert_counts > 0).float().mean().item() * 100
+        utilization = (expert_counts > 0).float().mean() * 100
 
         # Load balancing auxiliary loss
         fraction = expert_counts / num_tokens

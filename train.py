@@ -102,9 +102,11 @@ def train_stage1(config: SmallLLMConfig):
                 optimizer.zero_grad()
                 scheduler.step()
 
-                if step % 100 == 0:
+                # More frequent logging, especially for fast_test
+                log_interval = 10 if config.fast_test else 100
+                if step < config.pretrain_grad_accum * 2 or step % log_interval == 0:
                     elapsed = time.time() - start_time
-                    tps = total_tokens / elapsed
+                    tps = total_tokens / (elapsed + 1e-8)
                     cur_loss = loss_val.item() * config.pretrain_grad_accum
                     util_val = util.item()
                     print(

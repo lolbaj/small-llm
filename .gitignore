@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pt
+*.toon
+*.safetensors
+*.csv
+tokenizer/tokenizer.json
+test_tokenizer/
+tokenizer.json
+.ipynb_checkpoints/
+export/
+checkpoints/

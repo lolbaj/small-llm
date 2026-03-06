@@ -61,8 +61,13 @@ def apply_rotary_emb(x_in, cos, sin):
     half_len = x_in.shape[-1] // 2
     x1 = x_in[..., :half_len]
     x2 = x_in[..., half_len:]
+    # Slice cos/sin to match the half-dimension
+    cos_half = cos[..., :half_len]
+    sin_half = sin[..., :half_len]
     # Rotate: (x1, x2) -> (x1*cos - x2*sin, x1*sin + x2*cos)
-    return torch.cat((x1 * cos - x2 * sin, x1 * sin + x2 * cos), dim=-1)
+    return torch.cat(
+        (x1 * cos_half - x2 * sin_half, x1 * sin_half + x2 * cos_half), dim=-1
+    )
 
 
 # pylint: disable=too-many-instance-attributes

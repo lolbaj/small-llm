@@ -16,27 +16,32 @@ from utils import estimate_ram_usage, get_autocast_context
 
 def mask_user_tokens(x_ids, tokenizer):
     """
-    Creates a mask for the assistant tokens in the target sequence.
-    User tokens (between <|user|> and <|assistant|>) are masked out (set to -100).
+    Vectorized mask for assistant tokens.
+    User tokens (between <|user|> and <|assistant|>) are masked out (-100).
     """
     user_id = tokenizer.get_special_token_id("<|user|>")
     asst_id = tokenizer.get_special_token_id("<|assistant|>")
+    pad_id = tokenizer.get_special_token_id("<|pad|>")
 
     targets = x_ids.clone()
 
-    for i in range(x_ids.shape[0]):
-        is_user_turn = False
-        for j in range(x_ids.shape[1]):
-            token = x_ids[i, j].item()
+    # Vectorized logic:
+    # 1. Find where user/assistant tags are
+    is_user_tag = x_ids == user_id
+    is_asst_tag = x_ids == asst_id
 
-            if token == user_id:
-                is_user_turn = True
-            elif token == asst_id:
-                is_user_turn = False
+    # 2. Compute "turn" state using cumulative sums
+    # Every time we see a user tag, the state increases.
+    # Every time we see an asst tag, it effectively "decreases" if we logic it right.
+    # Logic: tokens after <|user|> but before <|assistant|> are user tokens.
+    user_cum = is_user_tag.cumsum(dim=1)
+    asst_cum = is_asst_tag.cumsum(dim=1)
 
-            if is_user_turn or token == tokenizer.get_special_token_id("<|pad|>"):
-                targets[i, j] = -100
+    # In user turn if we've seen more user tags than assistant tags
+    # OR if we are ON the assistant tag itself (since we only train on RESPONSE tokens)
+    mask = (user_cum > asst_cum) | is_asst_tag | (x_ids == pad_id)
 
+    targets[mask] = -100
     return targets
 
 

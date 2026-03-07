@@ -92,8 +92,9 @@ def load_checkpoint(model, optimizer=None, path="checkpoints/latest.pt"):
     """Loads a model checkpoint."""
     if not os.path.exists(path):
         return 0
-    checkpoint = torch.load(path)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    checkpoint = torch.load(path, weights_only=False)
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_state_dict"].items()}
+    model.load_state_dict(state_dict)
     if optimizer and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     return checkpoint["step"]

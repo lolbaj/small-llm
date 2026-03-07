@@ -4,6 +4,7 @@ Stage 2: Supervised Fine-Tuning (SFT) for SmallLLM.
 
 import os
 import torch
+from tqdm import tqdm
 from torch import amp
 from torch.optim import AdamW
 from config import SmallLLMConfig
@@ -58,8 +59,9 @@ def train_stage2(config: SmallLLMConfig, pretrain_path: str):
     tokenizer.load("tokenizer")
 
     model = MoETransformer(config).to(device)
-    checkpoint = torch.load(pretrain_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    checkpoint = torch.load(pretrain_path, map_location=device, weights_only=False)
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_state_dict"].items()}
+    model.load_state_dict(state_dict)
     print(f"[*] Loaded pre-trained checkpoint from {pretrain_path}")
 
     optimizer = AdamW(model.parameters(), lr=config.sft_lr)
@@ -74,7 +76,8 @@ def train_stage2(config: SmallLLMConfig, pretrain_path: str):
     model.train()
     for epoch in range(config.sft_epochs):
         step = 0
-        for x_ids, _ in dataloader:
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
+        for x_ids, _ in pbar:
             x_ids = x_ids.to(device)
             targets = mask_user_tokens(x_ids, tokenizer).to(device)
 
@@ -90,7 +93,7 @@ def train_stage2(config: SmallLLMConfig, pretrain_path: str):
             optimizer.zero_grad()
 
             if step % 50 == 0:
-                print(f"Epoch {epoch} | Step {step} | Loss: {loss.item():.4f}")
+                pbar.set_postfix({"Loss": f"{loss.item():.4f}"})
 
             step += 1
 
@@ -103,4 +106,12 @@ def train_stage2(config: SmallLLMConfig, pretrain_path: str):
 
 
 if __name__ == "__main__":
-    train_stage2(SmallLLMConfig(fast_test=True), "checkpoints/pretrain_step_0.pt")
+    # Use the latest checkpoint from pre-training test
+    checkpoint_path = "checkpoints/pretrain_step_50.pt"
+    if not os.path.exists(checkpoint_path):
+        checkpoint_path = "checkpoints/pretrain_step_0.pt"
+        
+    if os.path.exists(checkpoint_path):
+        train_stage2(SmallLLMConfig(fast_test=True), checkpoint_path)
+    else:
+        print(f"[!] Pre-trained checkpoint not found at {checkpoint_path}. Run train.py first.")

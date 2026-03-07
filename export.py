@@ -17,10 +17,11 @@ def export_model(aligned_path: str, output_name: str = "small_moe"):
     print(f"[*] Exporting model from {aligned_path}...")
 
     # 1. Load the original model
-    checkpoint = torch.load(aligned_path, map_location="cpu")
+    checkpoint = torch.load(aligned_path, map_location="cpu", weights_only=False)
     config = checkpoint["config"]
     model = MoETransformer(config)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_state_dict"].items()}
+    model.load_state_dict(state_dict)
     model.eval()
 
     # 2. INT8 Quantization (Dynamic)
@@ -36,11 +37,22 @@ def export_model(aligned_path: str, output_name: str = "small_moe"):
 
     # 4. Export to Safetensors (float32 and bfloat16)
     print("[*] Saving Safetensors...")
-    save_file(model.state_dict(), f"export/{output_name}_fp32.safetensors")
+    
+    # Safetensors does not support shared memory tensors (weight tying).
+    # We must provide a clean state_dict without duplicates.
+    def get_clean_state_dict(model_obj):
+        sd = model_obj.state_dict()
+        # If tok_emb.weight and output.weight share memory, remove output.weight for safetensors
+        if "tok_emb.weight" in sd and "output.weight" in sd:
+            if sd["tok_emb.weight"].data_ptr() == sd["output.weight"].data_ptr():
+                del sd["output.weight"]
+        return sd
+
+    save_file(get_clean_state_dict(model), f"export/{output_name}_fp32.safetensors")
 
     # Save a bfloat16 version
     model_bf16 = copy_model_to_dtype(model, torch.bfloat16)
-    save_file(model_bf16.state_dict(), f"export/{output_name}_bf16.safetensors")
+    save_file(get_clean_state_dict(model_bf16), f"export/{output_name}_bf16.safetensors")
 
     # 5. Instructions for GGUF
     print("\n" + "=" * 50)

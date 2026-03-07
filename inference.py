@@ -21,10 +21,11 @@ class SmallLLMInference:
         self.tokenizer.load("tokenizer")
 
         # Load from checkpoint
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         self.config = checkpoint["config"]
         self.model = MoETransformer(self.config).to(self.device)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_state_dict"].items()}
+        self.model.load_state_dict(state_dict)
         self.model.eval()
 
     def generate(
@@ -42,13 +43,21 @@ class SmallLLMInference:
             device=self.device,
         )
 
+        # Ensure we don't exceed model context length
+        prompt_len = input_ids.shape[1]
+        max_new_tokens = min(max_new_tokens, self.config.context_length - prompt_len)
+
+        if max_new_tokens <= 0:
+            print("[!] Prompt too long for context length.")
+            return
+
         print("\n<|assistant|>", flush=True)
 
         kv_caches = None
         curr_ids = input_ids
 
         with torch.no_grad():
-            for _ in range(max_new_tokens):
+            for i in range(max_new_tokens):
                 # Forward pass:
                 # On first step, we pass full prompt and get initial cache.
                 # On subsequent steps, we pass ONLY the last token and update cache.
@@ -88,12 +97,14 @@ def chat_loop():
     print("=" * 50)
 
     # Assumes SFT or Aligned model exists
-    model_path = "checkpoints/sft/sft_epoch_0.pt"
+    model_path = "checkpoints/final_aligned.pt"
     if not os.path.exists(model_path):
-        model_path = "checkpoints/pretrain_step_0.pt"
+        model_path = "checkpoints/sft/sft_epoch_0.pt"
         if not os.path.exists(model_path):
-            print("[-] No checkpoints found. Please train the model first.")
-            return
+            model_path = "checkpoints/pretrain_step_0.pt"
+            if not os.path.exists(model_path):
+                print("[-] No checkpoints found. Please train the model first.")
+                return
 
     engine = SmallLLMInference(model_path)
 

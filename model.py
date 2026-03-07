@@ -348,7 +348,7 @@ class MoETransformer(nn.Module):
         if targets is not None:
             # Flatten for CrossEntropy
             loss_out = F.cross_entropy(
-                logits_out.view(-1, self.config.vocab_size), targets.view(-1)
+                logits_out.reshape(-1, self.config.vocab_size), targets.reshape(-1)
             )
             # Add total MoE load balance loss
             loss_out += self.config.moe_aux_loss_coeff * total_aux_loss

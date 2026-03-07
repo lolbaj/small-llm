@@ -4,6 +4,7 @@ Stage 3: Group Relative Policy Optimization (GRPO) alignment for SmallLLM.
 
 import random
 import torch
+from tqdm import tqdm
 import torch.nn.functional as F
 from torch.optim import AdamW
 from config import SmallLLMConfig
@@ -66,38 +67,38 @@ class GRPORewards:
 
 
 def sample_responses(model, prompt_ids, group_size, tokenizer, max_new_tokens=256):
-    """Samples G responses for a single prompt using current policy model."""
+    """Samples G responses for a single prompt using current policy model with KV cache."""
     model.eval()
     responses_ids = []
-    responses_logprobs = []
-
+    # Old logprobs from sampling phase (no-grad) are not used for training
+    # but kept for legacy if needed. We will re-evaluate them with grads later.
+    
     for _ in range(group_size):
         with torch.no_grad():
             curr_ids = prompt_ids.clone()
-            logprobs = []
+            kv_caches = None
+            resp_ids = []
 
-            for _ in range(max_new_tokens):
-                logits, _, _, _, _ = model(curr_ids)
+            for i in range(max_new_tokens):
+                # Use KV cache for efficiency
+                # On first step, pass full prompt. Subsequently, pass only the last token.
+                input_ids = curr_ids if i == 0 else curr_ids[:, -1:]
+                logits, _, _, _, kv_caches = model(input_ids, kv_caches=kv_caches)
+                
                 next_token_logits = logits[:, -1, :] / 0.8
-
                 probs = F.softmax(next_token_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
 
-                token_logprob = torch.log_softmax(next_token_logits, dim=-1).gather(
-                    -1, next_token
-                )
-                logprobs.append(token_logprob)
-
+                resp_ids.append(next_token)
                 curr_ids = torch.cat([curr_ids, next_token], dim=1)
 
                 if next_token.item() == tokenizer.get_special_token_id("<|end|>"):
                     break
 
-            responses_ids.append(curr_ids[:, prompt_ids.shape[1] :])
-            responses_logprobs.append(torch.cat(logprobs, dim=1))
+            responses_ids.append(torch.cat(resp_ids, dim=1))
 
     model.train()
-    return responses_ids, responses_logprobs
+    return responses_ids
 
 
 # pylint: disable=too-many-locals
@@ -113,11 +114,12 @@ def train_stage3_grpo(config: SmallLLMConfig, sft_path: str):
     reward_gen = GRPORewards(tokenizer)
 
     policy_model = MoETransformer(config).to(device)
-    checkpoint = torch.load(sft_path, map_location=device)
-    policy_model.load_state_dict(checkpoint["model_state_dict"])
+    checkpoint = torch.load(sft_path, map_location=device, weights_only=False)
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_state_dict"].items()}
+    policy_model.load_state_dict(state_dict)
 
     ref_model = MoETransformer(config).to(device)
-    ref_model.load_state_dict(checkpoint["model_state_dict"])
+    ref_model.load_state_dict(state_dict)
     ref_model.eval()
     for param in ref_model.parameters():
         param.requires_grad = False
@@ -133,13 +135,14 @@ def train_stage3_grpo(config: SmallLLMConfig, sft_path: str):
 
     print(f"[*] Starting GRPO Alignment: {config.grpo_steps} steps...")
 
-    for step in range(config.grpo_steps):
+    pbar = tqdm(range(config.grpo_steps), desc="GRPO Alignment")
+    for step in pbar:
         prompt = random.choice(prompts)
         prompt_ids = torch.tensor(
             [tokenizer.encode(f"<|user|> {prompt} <|assistant|> ")], device=device
         )
 
-        responses, policy_logprobs = sample_responses(
+        responses = sample_responses(
             policy_model, prompt_ids, config.grpo_group_size, tokenizer
         )
 
@@ -154,20 +157,34 @@ def train_stage3_grpo(config: SmallLLMConfig, sft_path: str):
         std_r = rewards_tensor.std() + 1e-8
         advantages = (rewards_tensor - mean_r) / std_r
 
-        total_loss = 0
+        # Optimization step: we need to re-evaluate logprobs with gradients
+        optimizer.zero_grad()
+        
+        step_loss = 0
         for i in range(config.grpo_group_size):
+            input_ids = torch.cat([prompt_ids, responses[i]], dim=1)
+            resp_len = responses[i].shape[1]
+            
+            # Policy logprobs (with gradients)
+            policy_logits, _, _, _, _ = policy_model(input_ids[:, :-1])
+            policy_logprobs_all = torch.log_softmax(policy_logits, dim=-1)
+            policy_logprobs = (
+                policy_logprobs_all[:, -resp_len:, :]
+                .gather(-1, responses[i].unsqueeze(-1))
+                .squeeze(-1)
+            )
+
+            # Reference logprobs (no gradients)
             with torch.no_grad():
-                input_ids = torch.cat([prompt_ids, responses[i]], dim=1)
                 ref_logits, _, _, _, _ = ref_model(input_ids[:, :-1])
                 ref_logprobs_all = torch.log_softmax(ref_logits, dim=-1)
-                resp_len = responses[i].shape[1]
                 ref_logprobs = (
                     ref_logprobs_all[:, -resp_len:, :]
                     .gather(-1, responses[i].unsqueeze(-1))
                     .squeeze(-1)
                 )
 
-            ratio = torch.exp(policy_logprobs[i] - ref_logprobs)
+            ratio = torch.exp(policy_logprobs - ref_logprobs)
 
             surr1 = ratio * advantages[i]
             surr2 = (
@@ -176,21 +193,23 @@ def train_stage3_grpo(config: SmallLLMConfig, sft_path: str):
             )
             policy_loss = -torch.min(surr1, surr2).mean()
 
-            kl_div = (policy_logprobs[i] - ref_logprobs).mean()
-
-            total_loss += policy_loss + config.grpo_kl_beta * kl_div
-
-        total_loss = total_loss / config.grpo_group_size / config.grpo_grad_accum
-        total_loss.backward()
+            kl_div = (policy_logprobs - ref_logprobs).mean()
+            
+            # Combine losses
+            loss = policy_loss + config.grpo_kl_beta * kl_div
+            loss = loss / config.grpo_group_size / config.grpo_grad_accum
+            loss.backward()
+            step_loss += loss.item()
 
         if (step + 1) % config.grpo_grad_accum == 0:
             optimizer.step()
             optimizer.zero_grad()
 
             if step % 20 == 0:
-                print(
-                    f"Step {step} | Mean Reward: {mean_r:.4f} | Loss: {total_loss.item():.6f}"
-                )
+                pbar.set_postfix({
+                    "Mean Reward": f"{mean_r:.4f}", 
+                    "Loss": f"{step_loss:.6f}"
+                })
 
     final_path = "checkpoints/final_aligned.pt"
     torch.save(

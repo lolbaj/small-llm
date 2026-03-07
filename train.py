@@ -6,6 +6,7 @@ import csv
 import os
 import time
 import torch
+from tqdm import tqdm
 from torch import nn, amp
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -74,15 +75,17 @@ def train_stage1(config: SmallLLMConfig):
             ["step", "loss", "aux_loss", "util_pct", "lr", "tokens_sec"]
         )
 
-        print(f"[*] Starting Pre-training: {config.pretrain_steps} steps...")
+        print(f"[*] Starting Pre-training: {config.pretrain_steps} update steps...")
 
         model.train()
-        step = 0
+        update_step = 0
+        global_step = 0
         total_tokens = 0
         start_time = time.time()
 
+        pbar = tqdm(total=config.pretrain_steps, desc="Pre-training")
         for x_ids, y_ids in dataloader:
-            if step >= config.pretrain_steps:
+            if update_step >= config.pretrain_steps:
                 break
 
             x_ids, y_ids = x_ids.to(device), y_ids.to(device)
@@ -94,28 +97,32 @@ def train_stage1(config: SmallLLMConfig):
             scaler.scale(loss_val).backward()
             total_tokens += x_ids.numel()
 
-            if (step + 1) % config.pretrain_grad_accum == 0:
+            if (global_step + 1) % config.pretrain_grad_accum == 0:
                 scaler.unscale_(optimizer)
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
                 scheduler.step()
+                update_step += 1
+                pbar.update(1)
 
                 # More frequent logging, especially for fast_test
                 log_interval = 10 if config.fast_test else 100
-                if step < config.pretrain_grad_accum * 2 or step % log_interval == 0:
+                if update_step < 10 or update_step % log_interval == 0:
                     elapsed = time.time() - start_time
                     tps = total_tokens / (elapsed + 1e-8)
                     cur_loss = loss_val.item() * config.pretrain_grad_accum
                     util_val = util.item()
-                    print(
-                        f"Step {step}/{config.pretrain_steps} | Loss: {cur_loss:.4f} | "
-                        f"Aux: {aux_loss.item():.4f} | Util: {util_val:.1f}% | T/s: {tps:.2f}"
-                    )
+                    pbar.set_postfix({
+                        "Loss": f"{cur_loss:.4f}", 
+                        "Aux": f"{aux_loss.item():.4f}", 
+                        "Util": f"{util_val:.1f}%", 
+                        "T/s": f"{tps:.2f}"
+                    })
                     log_writer.writerow(
                         [
-                            step,
+                            update_step,
                             cur_loss,
                             aux_loss.item(),
                             util_val,
@@ -125,20 +132,23 @@ def train_stage1(config: SmallLLMConfig):
                     )
                     log_file.flush()
 
-                if step % 500 == 0 or step == config.pretrain_steps - 1:
-                    path = f"checkpoints/pretrain_step_{step}.pt"
+                if update_step % 500 == 0 or update_step == config.pretrain_steps:
+                    path = f"checkpoints/pretrain_step_{update_step}.pt"
                     torch.save(
                         {
-                            "step": step,
+                            "step": update_step,
                             "model_state_dict": model.state_dict(),
                             "optimizer_state_dict": optimizer.state_dict(),
                             "config": config,
                         },
                         path,
                     )
-                    print(f"[*] Checkpoint saved: {path}")
+                    # pbar.write instead of print so we don't break the progress bar
+                    pbar.write(f"[*] Checkpoint saved: {path}")
 
-            step += 1
+            global_step += 1
+            
+        pbar.close()
 
 
 if __name__ == "__main__":

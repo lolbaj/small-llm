@@ -42,9 +42,15 @@ class ToonFormat:
         tensor_metadata = []
 
         for name, tensor in model_state.items():
+            # Skip non-tensor objects (like dtypes) that might be in quantized state_dicts
+            if not isinstance(tensor, torch.Tensor):
+                continue
+
             # Support quantized or standard tensors
-            if tensor.dtype in (torch.qint8, torch.uint8):
-                raw = tensor.numpy().tobytes()
+            if tensor.dtype in (torch.qint8, torch.quint8):
+                # Quantized tensors need to be dequantized or handled specially
+                # For .toon, we'll store the raw int8 values
+                raw = tensor.int_repr().numpy().tobytes()
                 dtype = "qint8"
             elif tensor.dtype == torch.float16:
                 raw = tensor.numpy().tobytes()

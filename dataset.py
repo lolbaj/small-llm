@@ -44,13 +44,14 @@ class StreamingDatasetWrapper(IterableDataset):
             # Encode text
             ids = self.tokenizer.encode(text)
 
-            # Chunking/Padding
-            for idx in range(0, len(ids), self.context_len):
+            # Chunking/Padding: Use a step size of context_len - 1 to ensure 
+            # that the last token of one chunk is the first token of the next.
+            step_size = self.context_len - 1
+            for idx in range(0, len(ids) - 1, step_size):
                 chunk = ids[idx : idx + self.context_len]
                 # Need at least 2 tokens for next-token prediction
                 if len(chunk) < 2:
                     continue
-
                 # Padding
                 if len(chunk) < self.context_len:
                     pad_id = self.tokenizer.get_special_token_id("<|pad|>")
